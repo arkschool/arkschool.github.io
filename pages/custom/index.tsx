@@ -26,11 +26,11 @@ import { useMemo } from 'react';
 import { decodePassphrase } from '../../lib/client-utils';
 import { DebugMode } from '../../lib/Debug';
 import React from 'react';
-import SvgLeaveIcon from './leaveicon';
-import SvgChatIcon from './chaticon';
-import { useMediaQuery } from './usemediaquery';
-import { mergeProps } from './mergeProps';
-import { VideoConference } from './videoConference';
+import SvgLeaveIcon from '../../lib/leaveicon';
+import SvgChatIcon from '../../lib/chaticon';
+import { useMediaQuery } from '../../lib/usemediaquery';
+import { mergeProps } from '../../lib/mergeProps';
+import { VideoConference } from '../../lib/videoConference';
 
 export default function CustomRoomConnection() {
   const router = useRouter();
