@@ -9,6 +9,7 @@ import { RoomEvent, Track } from 'livekit-client';
 import * as React from 'react';
 import type { MessageFormatter } from '@livekit/components-react';
 import {
+  AudioVisualizer,
   CarouselLayout,
   ConnectionStateToast,
   FocusLayout,

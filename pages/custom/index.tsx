@@ -4,14 +4,20 @@ import {
   DisconnectButton,
   formatChatMessageLinks,
   LiveKitRoom,
+  LocalUserChoices,
   MediaDeviceMenu,
+  PreJoinProps,
   StartAudio,
   TrackToggle,
   useLocalParticipantPermissions,
   useMaybeLayoutContext,
+  usePreviewTracks,
 } from '@livekit/components-react';
 import {
   ExternalE2EEKeyProvider,
+  facingModeFromLocalTrack,
+  LocalAudioTrack,
+  LocalVideoTrack,
   LogLevel,
   Room,
   RoomConnectOptions,
@@ -22,7 +28,7 @@ import {
 } from 'livekit-client';
 import { supportsScreenSharing } from '@livekit/components-core';
 import { useRouter } from 'next/router';
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { decodePassphrase } from '../../lib/client-utils';
 import { DebugMode } from '../../lib/Debug';
 import React from 'react';
@@ -31,6 +37,16 @@ import SvgChatIcon from '../../lib/chaticon';
 import { useMediaQuery } from '../../lib/usemediaquery';
 import { mergeProps } from '../../lib/mergeProps';
 import { VideoConference } from '../../lib/videoConference';
+import dynamic from 'next/dynamic';
+import { log } from 'console';
+import SvgParticipantPlaceholder from '../../lib/participantplacehold';
+
+const PreJoinNoSSR = dynamic(
+  async () => {
+    return PreJoin;
+  },
+  { ssr: false },
+);
 
 export default function CustomRoomConnection() {
   const router = useRouter();
@@ -42,6 +58,12 @@ export default function CustomRoomConnection() {
     typeof window !== 'undefined' &&
     new Worker(new URL('livekit-client/e2ee-worker', import.meta.url));
   const keyProvider = new ExternalE2EEKeyProvider();
+
+  const [preJoinChoices, setPreJoinChoices] = useState<LocalUserChoices | undefined>(undefined);
+
+  function handlePreJoinSubmit(values: LocalUserChoices) {
+    setPreJoinChoices(values);
+  }
 
   const e2eeEnabled = !!(e2eePassphrase && worker);
 
@@ -84,19 +106,38 @@ export default function CustomRoomConnection() {
 
   return (
     <main data-lk-theme="default">
-      {liveKitUrl && (
-        <LiveKitRoom
-          room={room}
-          token={token}
-          connectOptions={connectOptions}
-          serverUrl={liveKitUrl}
-          audio={true}
-          video={true}
-        >
-          <VideoConference chatMessageFormatter={formatChatMessageLinks} />
-          <ControlBar variation="verbose" />
-          <DebugMode logLevel={LogLevel.info} />
-        </LiveKitRoom>
+      {preJoinChoices ? (
+        liveKitUrl && (
+          <LiveKitRoom
+            room={room}
+            token={token}
+            connectOptions={connectOptions}
+            serverUrl={liveKitUrl}
+            audio={preJoinChoices.audioEnabled}
+            video={preJoinChoices.videoEnabled}
+          >
+            <VideoConference chatMessageFormatter={formatChatMessageLinks} />
+            <ControlBar variation="verbose" />
+            <DebugMode logLevel={LogLevel.info} />
+          </LiveKitRoom>
+        )
+      ) : (
+        <div style={{ display: 'grid', placeItems: 'center', height: '100%' }}>
+          <PreJoinNoSSR
+            micLabel="Микрофон"
+            camLabel="Камера"
+            joinLabel="Присоединиться"
+            userLabel="Ваше Имя"
+            onError={(err) => console.log('error while setting up prejoin', err)}
+            defaults={{
+              videoEnabled: true,
+              audioEnabled: true,
+              e2ee: false,
+            }}
+            onSubmit={handlePreJoinSubmit}
+            showE2EEOptions={false}
+          ></PreJoinNoSSR>
+        </div>
       )}
     </main>
   );
@@ -195,6 +236,237 @@ export function ControlBar({ variation, controls, ...props }: ControlBarProps) {
         </DisconnectButton>
       )}
       <StartAudio label="Start Audio" />
+    </div>
+  );
+}
+
+const DEFAULT_USER_CHOICES: LocalUserChoices = {
+  username: '',
+  videoEnabled: true,
+  audioEnabled: true,
+  videoDeviceId: 'default',
+  audioDeviceId: 'default',
+  e2ee: false,
+  sharedPassphrase: '',
+};
+
+export function PreJoin({
+  defaults = {},
+  onValidate,
+  onSubmit,
+  onError,
+  debug,
+  joinLabel = 'Join Room',
+  micLabel = 'Microphone',
+  camLabel = 'Camera',
+  userLabel = 'Username',
+  showE2EEOptions = false,
+  ...htmlProps
+}: PreJoinProps) {
+  const [userChoices, setUserChoices] = React.useState(DEFAULT_USER_CHOICES);
+  const [username, setUsername] = React.useState(
+    defaults.username ?? DEFAULT_USER_CHOICES.username,
+  );
+  const [videoEnabled, setVideoEnabled] = React.useState<boolean>(
+    defaults.videoEnabled ?? DEFAULT_USER_CHOICES.videoEnabled,
+  );
+  const initialVideoDeviceId = defaults.videoDeviceId ?? DEFAULT_USER_CHOICES.videoDeviceId;
+  const [videoDeviceId, setVideoDeviceId] = React.useState<string>(initialVideoDeviceId);
+  const initialAudioDeviceId = defaults.audioDeviceId ?? DEFAULT_USER_CHOICES.audioDeviceId;
+  const [audioEnabled, setAudioEnabled] = React.useState<boolean>(
+    defaults.audioEnabled ?? DEFAULT_USER_CHOICES.audioEnabled,
+  );
+  const [audioDeviceId, setAudioDeviceId] = React.useState<string>(initialAudioDeviceId);
+  const [e2ee, setE2ee] = React.useState<boolean>(defaults.e2ee ?? DEFAULT_USER_CHOICES.e2ee);
+  const [sharedPassphrase, setSharedPassphrase] = React.useState<string>(
+    defaults.sharedPassphrase ?? DEFAULT_USER_CHOICES.sharedPassphrase,
+  );
+
+  const tracks = usePreviewTracks(
+    {
+      audio: audioEnabled ? { deviceId: initialAudioDeviceId } : false,
+      video: videoEnabled ? { deviceId: initialVideoDeviceId } : false,
+    },
+    onError,
+  );
+
+  const videoEl = React.useRef(null);
+
+  const videoTrack = React.useMemo(
+    () =>
+      tracks?.filter(
+        (track: { kind: Track.Kind }) => track.kind === Track.Kind.Video,
+      )[0] as LocalVideoTrack,
+    [tracks],
+  );
+
+  const facingMode = React.useMemo(() => {
+    if (videoTrack) {
+      const { facingMode } = facingModeFromLocalTrack(videoTrack);
+      return facingMode;
+    } else {
+      return 'undefined';
+    }
+  }, [videoTrack]);
+
+  const audioTrack = React.useMemo(
+    () =>
+      tracks?.filter(
+        (track: { kind: Track.Kind }) => track.kind === Track.Kind.Audio,
+      )[0] as LocalAudioTrack,
+    [tracks],
+  );
+
+  React.useEffect(() => {
+    if (videoEl.current && videoTrack) {
+      videoTrack.unmute();
+      videoTrack.attach(videoEl.current);
+    }
+
+    return () => {
+      videoTrack?.detach();
+    };
+  }, [videoTrack]);
+
+  const [isValid, setIsValid] = React.useState<boolean>();
+
+  const handleValidation = React.useCallback(
+    (values: LocalUserChoices) => {
+      if (typeof onValidate === 'function') {
+        return onValidate(values);
+      } else {
+        return values.username === '';
+      }
+    },
+    [onValidate],
+  );
+
+  React.useEffect(() => {
+    const newUserChoices = {
+      username,
+      videoEnabled,
+      videoDeviceId,
+      audioEnabled,
+      audioDeviceId,
+      e2ee,
+      sharedPassphrase,
+    };
+    setUserChoices(newUserChoices);
+    setIsValid(handleValidation(newUserChoices));
+  }, [
+    username,
+    videoEnabled,
+    handleValidation,
+    audioEnabled,
+    audioDeviceId,
+    videoDeviceId,
+    sharedPassphrase,
+    e2ee,
+  ]);
+
+  function handleSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    if (handleValidation(userChoices)) {
+      if (typeof onSubmit === 'function') {
+        onSubmit(userChoices);
+      }
+    } else {
+    }
+  }
+
+  return (
+    <div className="lk-prejoin" {...htmlProps}>
+      <div className="lk-video-container">
+        {videoTrack && (
+          <video ref={videoEl} width="1280" height="720" data-lk-facing-mode={facingMode} />
+        )}
+        {(!videoTrack || !videoEnabled) && (
+          <div className="lk-camera-off-note">
+            <SvgParticipantPlaceholder />
+          </div>
+        )}
+      </div>
+      <div className="lk-button-group-container">
+        <div className="lk-button-group audio">
+          <TrackToggle
+            initialState={audioEnabled}
+            source={Track.Source.Microphone}
+            onChange={(enabled) => setAudioEnabled(enabled)}
+          >
+            {micLabel}
+          </TrackToggle>
+          <div className="lk-button-group-menu">
+            <MediaDeviceMenu
+              initialSelection={audioDeviceId}
+              kind="audioinput"
+              disabled={!audioTrack}
+              tracks={{ audioinput: audioTrack }}
+              onActiveDeviceChange={(_, id) => setAudioDeviceId(id)}
+            />
+          </div>
+        </div>
+        <div className="lk-button-group video">
+          <TrackToggle
+            initialState={videoEnabled}
+            source={Track.Source.Camera}
+            onChange={(enabled) => setVideoEnabled(enabled)}
+          >
+            {camLabel}
+          </TrackToggle>
+          <div className="lk-button-group-menu">
+            <MediaDeviceMenu
+              initialSelection={videoDeviceId}
+              kind="videoinput"
+              disabled={!videoTrack}
+              tracks={{ videoinput: videoTrack }}
+              onActiveDeviceChange={(_, id) => setVideoDeviceId(id)}
+            />
+          </div>
+        </div>
+      </div>
+
+      <form className="lk-username-container">
+        {showE2EEOptions && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            <div style={{ display: 'flex', flexDirection: 'row', gap: '1rem' }}>
+              <input
+                id="use-e2ee"
+                type="checkbox"
+                checked={e2ee}
+                onChange={(ev) => setE2ee(ev.target.checked)}
+              ></input>
+              <label htmlFor="use-e2ee">Enable end-to-end encryption</label>
+            </div>
+            {e2ee && (
+              <div style={{ display: 'flex', flexDirection: 'row', gap: '1rem' }}>
+                <label htmlFor="passphrase">Passphrase</label>
+                <input
+                  id="passphrase"
+                  type="password"
+                  value={sharedPassphrase}
+                  onChange={(ev) => setSharedPassphrase(ev.target.value)}
+                />
+              </div>
+            )}
+          </div>
+        )}
+        <button className="lk-button lk-join-button" type="submit" onClick={handleSubmit}>
+          {joinLabel}
+        </button>
+      </form>
+
+      {debug && (
+        <>
+          <strong>User Choices:</strong>
+          <ul className="lk-list" style={{ overflow: 'hidden', maxWidth: '15rem' }}>
+            <li>Username: {`${userChoices.username}`}</li>
+            <li>Video Enabled: {`${userChoices.videoEnabled}`}</li>
+            <li>Audio Enabled: {`${userChoices.audioEnabled}`}</li>
+            <li>Video Device: {`${userChoices.videoDeviceId}`}</li>
+            <li>Audio Device: {`${userChoices.audioDeviceId}`}</li>
+          </ul>
+        </>
+      )}
     </div>
   );
 }
